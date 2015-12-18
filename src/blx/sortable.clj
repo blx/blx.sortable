@@ -31,16 +31,23 @@
     (->> (line-seq rdr)
          (mapv parse-json))))
 
+(defn remove-special-chars [s]
+  ((fnil str/replace "") s #"[_-]" ""))
+
+(defn remove-spaces [s]
+  ((fnil str/replace "") s #" " ""))
+
 (defn prepare-product [product]
   (-> product
-      (update :product_name #(str/replace % #"[_-]" " "))))
+      (update :product_name (comp remove-spaces remove-special-chars))))
 
-
-; misfire: got "Samsung PL100" for listing "Samsung PL 120 purple"
 
 
 (defn longest-starting-match [a b]
-  (->> (map vector a b)
+  (->> [a b]
+       (map (comp remove-spaces remove-special-chars))
+       (map str/lower-case)
+       (apply map vector)
        (reduce (fn [match-len [a b]]
                  (if (= a b)
                    (inc match-len)
@@ -62,9 +69,20 @@
                                                            (:product_name %))
                                    %))
                      (sort-by first >)
-                     (filter #(> (first %) min-match-len))
+                     (filter (fn [[_ prod]]
+                               (if (:model prod)
+                                 (.contains (remove-special-chars (remove-spaces (:title listing)))
+                                            (remove-special-chars (remove-spaces (:model prod))))
+                                 true)))
+                     (filter #(> (first %)
+                                 ; Longer than just manufacturer name
+                                 (max min-match-len (count (:manufacturer listing)))))
                      (take 3))]
-    matches))
+    ; Do not allow ties
+    (when (and matches
+               (not= (first (first matches))
+                     (first (second matches))))
+      (first matches))))
 
 (defn match' [products listing]
   (println "Trying to match " listing)
