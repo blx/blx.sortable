@@ -42,7 +42,9 @@
       (update :model remove-chars)))
 
 
-(defn longest-starting-match [a b]
+(defn common-prefix-length
+  "Returns the length of the longest common prefix between a and b."
+  [a b]
   (reduce (fn [match-len [a b]]
             (if (= a b)
               (inc match-len)
@@ -58,12 +60,15 @@
        (some #(when (.startsWith (remove-chars (:manufacturer listing)) %)
                 %))))
 
-(defn match-title [products listing]
+(defn match-title
+  "Attempts to match listing to a product in products, returning a vector
+  [score matching-product] if successful, else nil."
+  [products listing]
         ; Longer than just manufacturer name
   (let [min-match-len (max 3 (count (:manufacturer listing)))
         matches (->> products
-                     (map #(vector (longest-starting-match (:title listing)
-                                                           (:product_name %))
+                     (map #(vector (common-prefix-length (:title listing)
+                                                         (:product_name %))
                                    %))
                      (filter (fn [[score prod]]
                                (and (> score min-match-len)
@@ -82,7 +87,10 @@
     (when-let [[_ match] (match-title products listing')]
       [listing match])))
 
-(defn domatch [products listings]
+(defn domatch
+  "Returns the sequence of Result maps produced by matching the
+  listings to the products."
+  [products listings]
   (let [matches (->> listings
                      (pmap #(match products %))  ; pmap was a 4x speedup
                      (filter some?))]
@@ -93,6 +101,13 @@
                  :listings (map first matching-listings)})))))
 
 
+
+(defn test-random [products listings]
+  ((juxt #(match products %) identity)
+   (rand-nth listings)))
+
+
+
 (defn -main
   [& args]
   ; We need to read all products into memory, but we
@@ -100,7 +115,8 @@
   (let [products (mapv prepare-product (load-input (:products-uri conf)))]
     (with-open [listings (io/reader (:listings-uri conf))
                 out (io/writer (:out-uri conf))]
-      (doseq [result (->> (line-seq listings)
-                          (map parse-json)
-                          (map #(match-product products %)))]
-        (json/generate-stream result out)))))
+      (doseq [item (->> (line-seq listings)
+                        (map parse-json)
+                        (domatch products))]
+        (json/generate-stream item out)
+        (.write out "\n")))))
