@@ -1,6 +1,13 @@
 (ns blx.sortable
-  (:require [cheshire.core :as json])
+  (:require [clojure.java.io :as io] 
+            [clojure.string :as str]
+            [cheshire.core :as json])
   (:gen-class))
+
+(def conf
+  {:products-uri "resources/data/products.txt"
+   :listings-uri "resources/data/listings.txt"
+   :out-uri "results.json"})
 
 ; Product :: {:product_name str
 ;             :manufacturer str
@@ -16,24 +23,90 @@
 ; Result :: {:product_name str
 ;            :listings [Listing]}
 
-(defn load-json [path]
-  (-> path
-      clojure.java.io/reader
-      (json/parse-stream true)))
+(defn- parse-json [s]
+  (json/parse-string s true))
 
-(defn match-products
-  [products listings]
-  ...)
+(defn load-input [path]
+  (with-open [rdr (io/reader path)]
+    (->> (line-seq rdr)
+         (mapv parse-json))))
+
+(defn prepare-product [product]
+  (-> product
+      (update :product_name #(str/replace % #"[_-]" " "))))
 
 
+; misfire: got "Samsung PL100" for listing "Samsung PL 120 purple"
+
+
+(defn longest-starting-match [a b]
+  (->> (map vector a b)
+       (reduce (fn [match-len [a b]]
+                 (if (= a b)
+                   (inc match-len)
+                   (reduced match-len)))
+               0)))
+
+
+
+
+(defn match-manufacturer [mproducts listing]
+  (->> (keys mproducts)
+       (some #(when (.startsWith (:manufacturer listing) %)
+                %))))
+
+(defn match-title [products listing]
+  (let [min-match-len 3
+        matches (->> products
+                     (map #(vector (longest-starting-match (:title listing)
+                                                           (:product_name %))
+                                   %))
+                     (sort-by first >)
+                     (filter #(> (first %) min-match-len))
+                     (take 3))]
+    matches))
+
+(defn match' [products listing]
+  (println "Trying to match " listing)
+  (let [mproducts (group-by :manufacturer products)
+        est-manufacturer (match-manufacturer mproducts listing)
+        est-products (match-title products listing)]
+    [est-manufacturer est-products]))
+
+
+(def match-threshold 20)
+
+(def match-preds
+  [[(fn [products listing]
+      (some #(.startsWith (:manufacturer listing) %)
+            (map :manufacturer products)))
+    20]])
+
+
+(defn match-product
+  "Returns the product matched by listing, or nil if no match."
+  [products listing]
+  (let [score-seq (map (fn [[pred weight]]
+                         (when (pred listing)
+                           weight))
+                       match-preds)]
+    (reduce (fn [score x]
+              (let [score' (+ score x)]
+                (if (>= score' match-threshold)
+                  (reduced score')
+                  score')))
+            0 score-seq)))
 
 
 
 (defn -main
-  "I don't do a whole lot ... yet."
   [& args]
-  (let [products (load-json "resources/data/products.txt")
-        listings (load-json "resources/data/listings.txt")
-        out "results.json"]
-    (-> (match-products products listings)
-        (json/generate-stream (clojure.java.io/writer out)))))
+  ; We need to read all products into memory, but we
+  ; can process listings lazily / line-by-line.
+  (let [products (mapv prepare-product (load-input (:products-uri conf)))]
+    (with-open [listings (io/reader (:listings-uri conf))
+                out (io/writer (:out-uri conf))]
+      (doseq [result (->> (line-seq listings)
+                          (map parse-json)
+                          (map #(match-product products %)))]
+        (json/generate-stream result out)))))
