@@ -1,7 +1,8 @@
 (ns blx.sortable
   (:require [clojure.java.io :as io] 
             [clojure.string :as str]
-            [cheshire.core :as json])
+            [cheshire.core :as json]
+            [clj-fuzzy.metrics :refer [levenshtein]])
   (:gen-class))
 
 (def conf
@@ -23,13 +24,28 @@
 ; Result :: {:product_name str
 ;            :listings [Listing]}
 
+
+
+; TODO
+;
+; LISTING title      vs    PRODUCT model
+; x Panasonic Lumix DMC-FZ40 (DMC prefix not in title)
+; x Panasonic Lumix ZS10 (vs product fam:"Lumix" + "DMC-DZ10")
+; x Canon PowerShot A3300 (vs product "A3300 IS")
+; x Kodak EasyShare Z1485 (vs product "Z1485 IS")
+; x Olympus E-P2 (vs product "PEN E-P2")
+; ~ Sony A390 (vs product "DSLR-A390")
+; x Sony A230L (vs product "DSLR-A290")
+; x Sony Alpha DSLR-SLT-A55 (vs product "SLT-A55")
+
+
 (defn- parse-json
   "Parses a JSON string, keywordizing keys."
   [s]
   (json/parse-string s true))
 
 (defn load-input
-  "Parses the file at `path` as a vector of JSON objects."
+  "Parses each line of the file at `path` as a JSON object, returning a vector."
   [path]
   (with-open [rdr (io/reader path)]
     (->> (line-seq rdr)
@@ -39,14 +55,27 @@
 
 (defn normalize-str [s]
   (-> (or s "")
-      (str/replace #"[ _-]+" "")
-      str/lower-case))
+      (str/replace #"[ _-]+" "")))
+      ;str/lower-case))
+
+(defn product-regex [product]
+  (let [optional-spaces (fn [s]
+                          (-> (or s "")
+                              (str/replace #"[\s_-]+" "[\\\\s_-]*")
+                              (str/replace #"(?i)(DSC|DSLR|DMC|PEN|SLT|IS)" "(?:$1)?")))]
+    (re-pattern (str #"(?i)^(?:[\w()]*\s*){0,3}"
+                     (if-let [fam (:family product)]
+                       (str "(?:"
+                            (:family product)
+                            ")?"
+                            #"\s*\w*\s*"))
+                     (optional-spaces (:model product))
+                     #"[^\d]+"))))
 
 (defn prepare-product [product]
   (-> product
       (#(assoc % :formatted-name (:product_name %)))
-      (update :product_name normalize-str)
-      (update :model normalize-str)))
+      (#(assoc % :regex (product-regex %)))))
 
 (defn common-prefix-length
   "Returns the length of the longest common prefix between sequences a and b."
@@ -55,40 +84,78 @@
        (take-while true?)
        count))
 
-(comment
-  (defn match-manufacturer [mproducts listing]
-    (->> (keys mproducts)
-         (map remove-chars)
-         (some #(when (.startsWith (normalize-str (:manufacturer listing)) %)
-                  %))))
-)
+(defn starts-with? [^String s candidate]
+  (.startsWith s (or candidate "")))
+
+(defn first-word [s]
+  (-> (or s "")
+      (str/split #"\s+" 2)  ; Split at most once
+      first))
+
+(defn group-products
+  [products]
+  (->> products
+       (map prepare-product)
+       (group-by (comp first-word
+                       (fnil str/lower-case "")
+                       :manufacturer))))
+
+
+(def manufacturer-matchers
+  [(fn first-word? [manufacturers candidate]
+     (->> manufacturers
+          (filter #{(first-word candidate)})
+          first))
+   
+   (fn levenshtein? [manufacturers candidate]
+     ; This is mainly for things like "OPYMPUS" -> "Olympus"
+     (and (> (count candidate) 3)  ; Very short strings are not likely to be similar
+          (let [max-delta 2
+                [guess lev-dist] (->> manufacturers
+                                      (map (juxt identity (partial levenshtein candidate)))
+                                      (apply min-key second))]
+            (when (<= lev-dist max-delta)
+              guess))))])
+
+(defn match-manufacturer
+  [manufacturers listing-manufacturer]
+  (let [min-prefix-length 2
+        preprocessor #(str/replace-first % #"^(?i)Hewlett\s*Packard" "hp")]
+    (when-let [listing-manufacturer (and (>= (count listing-manufacturer)
+                                             min-prefix-length)
+                                         (preprocessor listing-manufacturer))]
+      (let [match (->> manufacturer-matchers
+                       ; TODO cache this once we've calculated manufacturers once
+                       (map #(partial % manufacturers))
+                       (apply some-fn))]
+        (->> listing-manufacturer
+             str/lower-case
+             match)))))
+
 
 (defn match-title
-  "Attempts to match listing to a product in products, returning a vector
-  [listing matching-product] if successful, else nil."
   [products listing]
-  (let [listing-title (normalize-str (:title listing))
-        ; Longer than just manufacturer name
-        min-match-len (max 3 (count (:manufacturer listing)))
-                     ; This is fairly fast. Combining the map and filter
-                     ; as one reduce into a (transient []) didn't help much
-                     ; and was harder to read.
-        matches (->> products
-                     (map #(vector (common-prefix-length listing-title
-                                                         (:product_name %))
-                                   %))
-                     (filter (fn [[score prod]]
-                               (and (> score min-match-len)
-                                    (if-let [model (:model prod)]
-                                      (.contains listing-title model)
-                                      true))))
-                     (sort-by first >))]
-    ; Do not allow ties
-    (when (and matches
-               (not= (first (first matches))
-                     (first (second matches))))
-      (let [[_ match] (first matches)]
-       [listing match]))))
+    (when-let [title (-> (or (:title listing) "")
+                         (str/replace #"[_-]+" ""))]
+    (->> products
+         (filter #(re-find (:regex %) title))
+         first)))
+
+
+(defn match-listing
+  "Attempts to match listing to a product in products, returning a vector
+  [matching-product listing] if successful, else nil."
+  [products listing]
+  (or 
+    (when-let [manufacturer-guess
+               (match-manufacturer (keys products)
+                                   (or (:manufacturer listing)
+                                       (first-word (:title listing))))]
+      (if-let [product-guess (match-title (products manufacturer-guess)
+                                            listing)]
+        [product-guess listing]
+        [nil listing]))))
+
 
 (defn match-all
   "Returns the sequence of Result maps produced by matching the
@@ -97,13 +164,19 @@
   ; because we need to group the results by Product after matching.
   [products listings]
   (let [matches (->> listings
-                     (pmap #(match-title products %))  ; pmap was a 4x speedup
-                     (filter some?))]
+                     (pmap #(match-listing products %))  ; pmap was a 4x speedup
+                     )
+;                     (filter some?))
+        product first
+        listing second]
     (->> matches
-         (group-by second)
+         (group-by product)
          (map (fn [[prod matching-listings]]
-                {:product_name (:formatted-name prod)
-                 :listings (map first matching-listings)})))))
+                (if prod
+                  {:product_name (:formatted-name prod)
+                   :listings (map listing matching-listings)}
+                  matching-listings))))))
+
 
 
 
@@ -118,13 +191,14 @@
   [& args]
   ; We need to read all products into memory at once, but we
   ; can process listings lazily / line-by-line.
-  (let [products (map prepare-product (load-input (:products-uri conf)))]
+;  (let [products (map prepare-product (load-input (:products-uri conf)))]
+  (let [products (group-products (load-input (:products-uri conf)))]
     (with-open [listings (io/reader (:listings-uri conf))
                 out      (io/writer (:out-uri conf))]
-      (doseq [item (->> (line-seq listings)
-                        (map parse-json)
-                        (match-all products))]
-        (json/generate-stream item out)
+      (doseq [result-item (->> (line-seq listings)
+                               (map parse-json)
+                               (match-all products))]
+        (json/generate-stream result-item out)
         (.write out "\n"))))
   ; Put pmap to bed
   (shutdown-agents))
