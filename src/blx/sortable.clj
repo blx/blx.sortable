@@ -7,7 +7,7 @@
 (def conf
   {:products-uri "resources/data/products.txt"
    :listings-uri "resources/data/listings.txt"
-   :out-uri "results.json"})
+   :out-uri      "results.txt"})
 
 ; Product :: {:product_name str
 ;             :manufacturer str
@@ -44,6 +44,7 @@
 
 (defn prepare-product [product]
   (-> product
+      (#(assoc % :formatted-name (:product_name %)))
       (update :product_name normalize-str)
       (update :model normalize-str)))
 
@@ -101,7 +102,7 @@
     (->> matches
          (group-by second)
          (map (fn [[prod matching-listings]]
-                {:product_name (:product_name prod)
+                {:product_name (:formatted-name prod)
                  :listings (map first matching-listings)})))))
 
 
