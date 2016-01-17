@@ -8,4 +8,5 @@
                  [clj-fuzzy "0.3.1"]]
   :main ^:skip-aot blx.sortable
   :target-path "target/%s"
-  :profiles {:uberjar {:aot :all}})
+  :profiles {:uberjar {:aot :all}
+             :dev {:dependencies [[com.taoensso/timbre "4.2.1"]]}})
