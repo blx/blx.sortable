@@ -54,42 +54,38 @@
   [path]
   (with-open [rdr (io/reader path)]
     (->> (line-seq rdr)
-         ; We need to return a vector (mapv), because otherwise with-open will
-         ; close the stream before the lazy sequence is realized.
+         ; We need to parse non-lazily (mapv), because otherwise with-open will
+         ; close the stream before the seq is realized.
          (mapv parse-json))))
 
-(defn product-regex
-  "Generates a regex pattern that represents the product."
+(p/defnp product-regex
+  "Generates a case-insensitive regex pattern that represents the product."
   [product]
-  (let [optional-spaces (fn [s]
-                          (-> (or s "")
-                              (str/replace #"[\s_-]+" "[\\\\s_-]*")
-                              (str/replace #"(?i)(DSC|DSLR|DMC|PEN|SLT|IS)" "(?:$1)?")))]
+  (let [fmt-model (fn [s]
+                    (-> (or s "")
+                        ; [_ -] chars are equivalent and optional
+                        (str/replace #"[\s_-]+" "[\\\\s_-]*")
+                        ; common model prefixes are optional
+                        (str/replace #"(?i)(DSC|DSLR|DMC|PEN|SLT|IS)" "(?:$1)?")))]
     (re-pattern
+      ; Roughly: word{0,3} family? word? model
       (str #"(?i)^(?:[\w()]*\s*){0,3}"
-           (if-let [fam (:family product)]
-             (str "(?:"
-                  (:family product)
-                  ")?"
+           (when-let [family (:family product)]
+             (str "(?:" family ")?"
                   #"\s*\w*\s*"))
-           (optional-spaces (:model product))
-           #"[^\d]+"))))
+           (fmt-model (:model product))
+           ; Don't match if model is directly followed by a number, eg.
+           ; don't accept "EOS 100" for "EOS 10".
+           #"(?:[^\d]+|$)"))))
 
 (defn prepare-product [product]
-  (-> product
-      (#(assoc % :regex (product-regex %)))))
+  (assoc product :regex (product-regex product)))
 
-(defn common-prefix-length
-  "Returns the length of the longest common prefix between sequences a and b."
-  [a b]
-  (->> (map = a b)
-       (take-while true?)
-       count))
-
-(defn starts-with? [^String s candidate]
-  (.startsWith s (or candidate "")))
-
-(defn first-word [s]
+(defn first-word
+  "Returns first word in s, defined by splitting on whitespace. Not lazy."
+  ; For large strings (10000 chars or more), the lazy version using partition-by
+  ; is faster.
+  [s]
   (-> (or s "")
       (str/split #"\s+" 2)  ; Split at most once
       first))
@@ -105,18 +101,28 @@
 
 (def manufacturer-matchers
   [(fn first-word? [manufacturers candidate]
-     (some #{(first-word candidate)} manufacturers))
+     (p/p :firstword
+          (some #{(first-word candidate)} manufacturers)))
    
    (fn levenshtein? [manufacturers candidate]
      ; This is mainly for things like "OPYMPUS" -> "Olympus"
      (p/p :levenshtein
-     (and (> (count candidate) 3)  ; Very short strings are not likely to be similar
-          (let [max-delta 2
-                [guess lev-dist] (->> manufacturers
-                                      (map (juxt identity (partial levenshtein candidate)))
-                                      (apply min-key second))]
-            (when (<= lev-dist max-delta)
-              guess)))))])
+          (let [min-length 4
+                max-lev-dist 2]
+            (and ; Very short strings are not likely to be similar
+                 (>= (count candidate) min-length)
+
+                 ; Levenshtein is expensive, so require the first letter to match
+                 ; before trying to compute it.
+                 ((set (map first manufacturers)) (first candidate))
+
+                 (let [[guess lev-dist]
+                       (p/p :lev-lev
+                            (->> manufacturers
+                                 (map (juxt identity (partial levenshtein candidate)))
+                                 (apply min-key second)))]
+                   (when (<= lev-dist max-lev-dist)
+                     guess))))))])
 
 (def match-manufacturer
   (memoize
@@ -138,12 +144,13 @@
 (defn match-title
   "Attempts to match listing's title to a product in products, returning the
   matched product if successful, else nil."
-  [products listing]
-    (when-let [title (-> (or (:title listing) "")
+  [products title]
+    (when-let [title (-> (or title "")
                          (str/replace #"[_-]+" ""))]
-    (->> products
-         (filter #(re-find (:regex %) title))
-         first)))
+      (p/p :mt-filter
+           (->> products
+                (filter #(re-find (:regex %) title))
+                first))))
 
 
 (p/defnp match-listing
@@ -152,10 +159,10 @@
   [products listing]
   (when-let [manufacturer-guess
              (p/p :match-manuf (match-manufacturer (keys products)
-                                 (or (:manufacturer listing)
-                                     (first-word (:title listing)))))]
+                                                   (or (:manufacturer listing)
+                                                       (first-word (:title listing)))))]
     (if-let [product-guess (p/p :match-title (match-title (products manufacturer-guess)
-                                        listing))]
+                                                          (:title listing)))]
       [product-guess listing]
       [nil listing])))
 
@@ -179,15 +186,6 @@
                   {:product_name (:product_name prod)
                    :listings (map listing matching-listings)}
                   matching-listings))))))
-
-
-
-
-(defn test-random [products listings]
-  (let [listing (rand-nth listings)]
-    (or (match-title products listing)
-        [nil listing])))
-
 
 
 (defn -main
