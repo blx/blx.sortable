@@ -2,7 +2,7 @@
   (:require [clojure.java.io :as io] 
             [clojure.string :as str]
             [cheshire.core :as json]
-            [clj-fuzzy.metrics :refer [levenshtein]]
+;            [clj-fuzzy.metrics :refer [levenshtein]]
             [taoensso.timbre :as timbre]
             [taoensso.timbre.profiling :as p])
   (:gen-class))
@@ -98,6 +98,23 @@
                        (fnil str/lower-case "")
                        :manufacturer))))
 
+(defn levenshtein
+  "Computes the Levenshtein distance between two sequences."
+  [c1 c2]
+  (let [lev-next-row
+        (fn [previous current]
+            (reduce
+              (fn [row [diagonal above other]]
+                (let [update-val (if (= other current)
+                                   diagonal
+                                   (inc (min diagonal above (peek row))))]
+                  (conj row update-val)))
+              [(inc (first previous))]
+              (map vector previous (next previous) c2)))]
+      (peek
+        (reduce lev-next-row
+                (range (inc (count c2)))
+                c1))))
 
 (def manufacturer-matchers
   [(fn first-word? [manufacturers candidate]
@@ -108,37 +125,35 @@
      ; This is mainly for things like "OPYMPUS" -> "Olympus"
      (p/p :levenshtein
           (let [min-length 4
+                max-length-delta 3  ; Skip Levenshtein if seq length > 3
                 max-lev-dist 2]
-            (and ; Very short strings are not likely to be similar
-                 (>= (count candidate) min-length)
+            (and
+              ; Very short strings are not likely to be similar
+              (>= (count candidate) min-length)
 
-                 ; Levenshtein is expensive, so require the first letter to match
-                 ; before trying to compute it.
-                 ((set (map first manufacturers)) (first candidate))
+              ; Levenshtein is expensive, so require the first letter to match
+              ; before trying to compute it.
+              ((set (map first manufacturers)) (first candidate))
 
-                 (let [[guess lev-dist]
-                       (p/p :lev-lev
-                            (->> manufacturers
-                                 (map (juxt identity (partial levenshtein candidate)))
-                                 (apply min-key second)))]
-                   (when (<= lev-dist max-lev-dist)
-                     guess))))))])
+              (when-let [levs
+                         (p/p :lev-lev
+                              (->> manufacturers
+                                   (filter #(< (Math/abs (- (count %) (count candidate)))
+                                               max-length-delta))
+                                   (map (juxt identity
+                                              (partial levenshtein candidate)))
+                                   seq))]
+                (let [[guess lev-dist] (apply min-key second levs)]
+                  (when (<= lev-dist max-lev-dist)
+                    guess)))))))])
 
 (def match-manufacturer
   (memoize
-    (fn [manufacturers listing-manufacturer]
-      (let [min-prefix-length 2
-            preprocessor #(str/replace-first % #"^(?i)Hewlett\s*Packard" "hp")]
-        (when-let [listing-manufacturer (and (>= (count listing-manufacturer)
-                                                 min-prefix-length)
-                                             (preprocessor listing-manufacturer))]
-          (let [match (->> manufacturer-matchers
-                           ; TODO cache this once we've calculated manufacturers once
-                           (map #(partial % manufacturers))
-                           (apply some-fn))]
-            (->> listing-manufacturer
-                 str/lower-case
-                 match)))))))
+    (fn [manufacturer-matcher listing-manufacturer]
+      (let [preprocessor (comp str/lower-case
+                               #(str/replace-first % #"^(?i)Hewlett\s*Packard" "hp"))]
+        (when-let [listing-manufacturer (preprocessor listing-manufacturer)]
+          (manufacturer-matcher listing-manufacturer))))))
 
 
 (defn match-title
@@ -156,13 +171,14 @@
 (p/defnp match-listing
   "Attempts to match listing to a product in products, returning a vector
   [matching-product listing] if successful, else nil."
-  [products listing]
+  [products manufacturer-matcher listing]
   (when-let [manufacturer-guess
-             (p/p :match-manuf (match-manufacturer (keys products)
+             (p/p :match-manuf (match-manufacturer manufacturer-matcher
                                                    (or (:manufacturer listing)
                                                        (first-word (:title listing)))))]
-    (if-let [product-guess (p/p :match-title (match-title (products manufacturer-guess)
-                                                          (:title listing)))]
+    (if-let [product-guess
+             (p/p :match-title (match-title (products manufacturer-guess)
+                                            (:title listing)))]
       [product-guess listing]
       [nil listing])))
 
@@ -173,8 +189,11 @@
   ; We take in all the listings, as opposed to doing (pmap match-listing listings),
   ; because we need to group the results by Product after matching.
   [products listings]
-  (let [matches (->> listings
-                     (pmap #(match-listing products %))  ; pmap was a 4x speedup
+  (let [manufacturer-matcher (->> manufacturer-matchers
+                                  (map #(partial % (keys products)))
+                                  (apply some-fn))
+        matches (->> listings
+                     (pmap #(match-listing products manufacturer-matcher %))  ; pmap was a 4x speedup
                      )
 ;                     (filter some?))
         product first
