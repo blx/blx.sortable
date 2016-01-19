@@ -1,6 +1,9 @@
 (ns blx.sortable.core
   (:require [clojure.java.io :as io] 
             [clojure.string :as str]
+            [clojure.core.reducers :as r]
+            [iota]
+            [tesser.core :as t]
             [cheshire.core :as json]
 ;            [clj-fuzzy.metrics :refer [levenshtein]]
             [taoensso.timbre :as timbre]
@@ -138,18 +141,16 @@
                     guess)))))))])
 
 (p/defnp match-listing
-  "Attempts to match listing to a product in products, returning a vector
-  [matching-product listing] if successful, else [nil listing]."
+  "Attempts to match listing to a product in products, returning the matched
+  product on success else nil."
   [manufacturer-matcher title-matchers listing]
-  (let [product-guess 
-        (when-let [manufacturer-guess
-                   (some->> listing
-                            ((:manufacturer listing-preprocessors))
-                            manufacturer-matcher)]
-          (some->> listing
-                   ((:title listing-preprocessors))
-                   ((title-matchers manufacturer-guess))))]
-    [product-guess listing]))
+  (when-let [manufacturer-guess
+             (some->> listing
+                      ((:manufacturer listing-preprocessors))
+                      manufacturer-matcher)]
+    (some->> listing
+             ((:title listing-preprocessors))
+             ((title-matchers manufacturer-guess)))))
 
 (p/defnp match-all
   "Returns the sequence of Result maps produced by matching the
@@ -157,8 +158,37 @@
   [products listings]
   (let [manufacturer-matcher (make-manufacturer-matcher products manufacturer-matchers)
         title-matchers (map-vals make-title-matcher products)]
-    (pmap #(match-listing manufacturer-matcher title-matchers %)
+    (pmap (juxt #(match-listing manufacturer-matcher title-matchers %)
+                identity)
           listings)))
+
+(p/defnp t-match [products listings]
+  (let [manufacturer-matcher (make-manufacturer-matcher products manufacturer-matchers)
+        title-matchers (map-vals make-title-matcher products)]
+    (->> (t/group-by (comp :product_name #(match-listing manufacturer-matcher title-matchers %)))
+         (t/fold {:reducer #(update %1 :listings conj %2)
+                  :reducer-identity (constantly {:listings []})
+                  :combiner conj
+                  :combiner-identity (constantly [])})
+         (t/tesser (t/chunk 1024 listings))
+         (pmap (fn [[prod m]]
+                (assoc m :product_name prod))))))
+
+(p/defnp r-match [products listings]
+  (let [manufacturer-matcher (make-manufacturer-matcher products manufacturer-matchers)
+        title-matchers (map-vals make-title-matcher products)
+        reducef (fn ([] {})
+                  ([m [listing prod]]
+                   (assoc m prod
+                          (-> m
+                              (get prod {:product_name prod
+                                         :listings []})
+                              (update :listings conj listing)))))]
+    (->> listings
+         (r/map (juxt identity (comp :product_name #(match-listing manufacturer-matcher title-matchers %))))
+         (into []))))
+;         (r/fold reducef)
+;         vals)))
 
 (p/defnp group-matches [matches]
   (let [product first
@@ -182,9 +212,15 @@
     (with-open [listings (io/reader (:listings-uri conf))
                 out      (io/writer (:out-uri conf))]
       (doseq [result-item (->> (line-seq listings)
-                               (map parse-json)
-                               (match-all products)
-                               group-matches)]
+                               (mapv parse-json)
+                               (t-match products))]
+                               ;(iota/seq (:listings-uri conf))
+                               ;(r/map (fn [s] (let [z (parse-json s)]
+                               ;                 (println z)
+                               ;                 z)))
+                               ;(r-match products))]
+                               ;(match-all products)
+                               ;group-matches)]
         (json/generate-stream result-item out)
         (.write out "\n")))))
   ; Put pmap to bed
