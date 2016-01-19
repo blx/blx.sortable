@@ -1,11 +1,9 @@
 (ns blx.sortable.core
   (:require [clojure.java.io :as io] 
             [clojure.string :as str]
-            [clojure.core.reducers :as r]
             [iota]
             [tesser.core :as t]
             [cheshire.core :as json]
-;            [clj-fuzzy.metrics :refer [levenshtein]]
             [taoensso.timbre :as timbre]
             [taoensso.timbre.profiling :as p]
             [blx.sortable.util :refer [first-word levenshtein map-vals]])
@@ -52,29 +50,57 @@
          ; close the stream before the seq is realized.
          (mapv parse-json))))
 
+(defn family-regex
+  [family]
+  (re-pattern
+    (str #"^(?:[\w()]*\s*){0,3}"
+         (when family
+           (str "(?:" (str/lower-case family) ")?"
+                #"\s*\w*\s*")))))
+
+(defn model-regex
+  [model]
+  (-> (or model "")
+      ; [_ -] chars are equivalent and optional
+      (str/replace #"[\s_-]+" "[\\\\s_-]*")
+      ; common model prefixes are optional
+      str/lower-case
+      (str/replace #"(dsc|dslr|dmc|pen|slt|is)" "(?:$1)?")))
+
 (p/defnp product-regex
   "Generates a case-insensitive regex pattern that represents the product."
   [product]
-  (let [fmt-model (fn [s]
-                    (-> (or s "")
-                        ; [_ -] chars are equivalent and optional
-                        (str/replace #"[\s_-]+" "[\\\\s_-]*")
-                        ; common model prefixes are optional
-                        (str/replace #"(?i)(DSC|DSLR|DMC|PEN|SLT|IS)" "(?:$1)?")
-                        str/lower-case))]
-    ; Roughly: word{0,3} family? word? model
-    (re-pattern
-      (str #"^(?:[\w()]*\s*){0,3}"
-           (when-let [family (:family product)]
-             (str "(?:" (str/lower-case family) ")?"
-                  #"\s*\w*\s*"))
-           (fmt-model (:model product))
-           ; Don't match if model is directly followed by a number,
-           ; eg. don't accept "EOS 100" for "EOS 10".
-           #"(?:[^\d]+|$)"))))
+  ; Roughly: word{0,3} family? word? model
+  (re-pattern
+    (str (family-regex (:family product))
+         (model-regex (:model product))
+         ; Don't match if model is directly followed by a number,
+         ; eg. don't accept "EOS 100" for "EOS 10".
+         #"(?:[^\d]+|$)")))
+
+(comment
+(defn make-product-matchers
+  [products]
+  (let [prefix-pattern
+        (fn [family]
+          (re-pattern
+            (str #"^(?:[\w()]*\s*){0,3}"
+                 (when family)
+                   (str "(?:" (str/lower-case family) ")?"
+                        #"\s*\w*\s*"))))]
+    (->> (map :family product)
+         (map (fn [family]
+                (let [fam-pat (prefix-pattern family)]
+                  (fn [query]
+                    (and (re-find fam-pat query)
+                         1)
+
+         (apply some-fn)))))))))
 
 (defn prepare-product [product]
-  (assoc product :regex (product-regex product)))
+  (assoc product
+         :regex (product-regex product)
+         :model-regex (re-pattern (model-regex (:model product)))))
 
 (p/defnp group-products
   "Returns a map of (lowercase first word of manufacturer) to products."
@@ -105,7 +131,8 @@
     (fn [title]
       (p/p :title-matcher
            (first
-             (filter #(re-find (:regex %) title)
+             (filter #(and (re-find (:model-regex %) title)
+                           (re-find (:regex %) title))
                      products))))))
 
 (defn make-manufacturer-matcher
