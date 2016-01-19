@@ -6,7 +6,7 @@
   :dependencies [[org.clojure/clojure "1.7.0"]
                  [cheshire "5.5.0"]
                  [clj-fuzzy "0.3.1"]]
-  :main ^:skip-aot blx.sortable
+  :main ^:skip-aot blx.sortable.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all}
              :dev {:dependencies [[com.taoensso/timbre "4.2.1"]]}})

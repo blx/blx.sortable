@@ -1,10 +1,11 @@
-(ns blx.sortable
+(ns blx.sortable.core
   (:require [clojure.java.io :as io] 
             [clojure.string :as str]
             [cheshire.core :as json]
 ;            [clj-fuzzy.metrics :refer [levenshtein]]
             [taoensso.timbre :as timbre]
-            [taoensso.timbre.profiling :as p])
+            [taoensso.timbre.profiling :as p]
+            [blx.sortable.util :refer [first-word levenshtein]])
   (:gen-class))
 
 (set! *warn-on-reflection* true)
@@ -66,12 +67,13 @@
                         ; [_ -] chars are equivalent and optional
                         (str/replace #"[\s_-]+" "[\\\\s_-]*")
                         ; common model prefixes are optional
-                        (str/replace #"(?i)(DSC|DSLR|DMC|PEN|SLT|IS)" "(?:$1)?")))]
+                        (str/replace #"(?i)(DSC|DSLR|DMC|PEN|SLT|IS)" "(?:$1)?")
+                        str/lower-case))]
     (re-pattern
       ; Roughly: word{0,3} family? word? model
-      (str #"(?i)^(?:[\w()]*\s*){0,3}"
+      (str #"^(?:[\w()]*\s*){0,3}"
            (when-let [family (:family product)]
-             (str "(?:" family ")?"
+             (str "(?:" (str/lower-case family) ")?"
                   #"\s*\w*\s*"))
            (fmt-model (:model product))
            ; Don't match if model is directly followed by a number, eg.
@@ -81,16 +83,8 @@
 (defn prepare-product [product]
   (assoc product :regex (product-regex product)))
 
-(defn first-word
-  "Returns first word in s, defined by splitting on whitespace. Not lazy."
-  ; For large strings (10000 chars or more), the lazy version using partition-by
-  ; is faster.
-  [s]
-  (-> (or s "")
-      (str/split #"\s+" 2)  ; Split at most once
-      first))
-
 (defn group-products
+  "Returns a map of (lowercase first word of manufacturer) to products."
   [products]
   (->> products
        (map prepare-product)
@@ -98,23 +92,18 @@
                        (fnil str/lower-case "")
                        :manufacturer))))
 
-(defn levenshtein
-  "Computes the Levenshtein distance between two sequences."
-  [c1 c2]
-  (let [lev-next-row
-        (fn [previous current]
-            (reduce
-              (fn [row [diagonal above other]]
-                (let [update-val (if (= other current)
-                                   diagonal
-                                   (inc (min diagonal above (peek row))))]
-                  (conj row update-val)))
-              [(inc (first previous))]
-              (map vector previous (next previous) c2)))]
-      (peek
-        (reduce lev-next-row
-                (range (inc (count c2)))
-                c1))))
+(def listing-preprocessors
+  {:manufacturer (fn [listing]
+                   (when-let [manuf (or (:manufacturer listing)
+                                        (first-word (:title listing)))]
+                     (-> manuf
+                         str/lower-case
+                         (str/replace-first #"^hewlett\s*packard" "hp"))))
+   :title (fn [listing]
+            (when-let [title (:title listing)]
+              (-> title
+                  (str/replace #"[_-]+" "")
+                  str/lower-case)))})
 
 (def manufacturer-matchers
   [(fn first-word? [manufacturers candidate]
@@ -124,11 +113,10 @@
    (fn levenshtein? [manufacturers candidate]
      ; This is mainly for things like "OPYMPUS" -> "Olympus"
      (p/p :levenshtein
-          (let [min-length 4
-                max-length-delta 3  ; Skip Levenshtein if seq length > 3
+          (let [min-length 4        ; Very short strings are not likely to be similar
+                max-length-delta 3  ; Skip Levenshtein if seqs aren't similar length
                 max-lev-dist 2]
             (and
-              ; Very short strings are not likely to be similar
               (>= (count candidate) min-length)
 
               ; Levenshtein is expensive, so require the first letter to match
@@ -147,40 +135,28 @@
                   (when (<= lev-dist max-lev-dist)
                     guess)))))))])
 
-(def match-manufacturer
-  (memoize
-    (fn [manufacturer-matcher listing-manufacturer]
-      (let [preprocessor (comp str/lower-case
-                               #(str/replace-first % #"^(?i)Hewlett\s*Packard" "hp"))]
-        (when-let [listing-manufacturer (preprocessor listing-manufacturer)]
-          (manufacturer-matcher listing-manufacturer))))))
 
-
-(defn match-title
+(p/defnp match-title
   "Attempts to match listing's title to a product in products, returning the
   matched product if successful, else nil."
   [products title]
-    (when-let [title (-> (or title "")
-                         (str/replace #"[_-]+" ""))]
-      (p/p :mt-filter
-           (->> products
-                (filter #(re-find (:regex %) title))
-                first))))
-
+    (->> products
+         (filter #(re-find (:regex %) title))
+         first))
 
 (p/defnp match-listing
   "Attempts to match listing to a product in products, returning a vector
   [matching-product listing] if successful, else nil."
   [products manufacturer-matcher listing]
-  (when-let [manufacturer-guess
-             (p/p :match-manuf (match-manufacturer manufacturer-matcher
-                                                   (or (:manufacturer listing)
-                                                       (first-word (:title listing)))))]
-    (if-let [product-guess
-             (p/p :match-title (match-title (products manufacturer-guess)
-                                            (:title listing)))]
-      [product-guess listing]
-      [nil listing])))
+  (when-let [listing-manufacturer ((:manufacturer listing-preprocessors) listing)]
+    (when-let [manufacturer-guess
+               (p/p :match-manuf
+                    (manufacturer-matcher listing-manufacturer))]
+      (when-let [listing-title ((:title listing-preprocessors) listing)]
+        (if-let [product-guess (match-title (products manufacturer-guess)
+                                            listing-title)]
+        [product-guess listing]
+        [nil listing])))))
 
 
 (p/defnp match-all
@@ -189,9 +165,9 @@
   ; We take in all the listings, as opposed to doing (pmap match-listing listings),
   ; because we need to group the results by Product after matching.
   [products listings]
-  (let [manufacturer-matcher (->> manufacturer-matchers
-                                  (map #(partial % (keys products)))
-                                  (apply some-fn))
+  (let [manufacturer-matcher (memoize (->> manufacturer-matchers
+                                           (map #(partial % (keys products)))
+                                           (apply some-fn)))
         matches (->> listings
                      (pmap #(match-listing products manufacturer-matcher %))  ; pmap was a 4x speedup
                      )
