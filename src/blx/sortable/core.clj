@@ -33,6 +33,11 @@
 ; Result :: {:product_name str
 ;            :listings [Listing]}
 
+
+; TODO
+; listing manufacturer "Eastman Kodak Company"
+
+
 (defn- parse-json
   "Parses a JSON string, keywordizing keys."
   [s]
@@ -162,34 +167,6 @@
                 identity)
           listings)))
 
-(p/defnp t-match [products listings]
-  (let [manufacturer-matcher (make-manufacturer-matcher products manufacturer-matchers)
-        title-matchers (map-vals make-title-matcher products)]
-    (->> (t/group-by (comp :product_name #(match-listing manufacturer-matcher title-matchers %)))
-         (t/fold {:reducer #(update %1 :listings conj %2)
-                  :reducer-identity (constantly {:listings []})
-                  :combiner conj
-                  :combiner-identity (constantly [])})
-         (t/tesser (t/chunk 1024 listings))
-         (pmap (fn [[prod m]]
-                (assoc m :product_name prod))))))
-
-(p/defnp r-match [products listings]
-  (let [manufacturer-matcher (make-manufacturer-matcher products manufacturer-matchers)
-        title-matchers (map-vals make-title-matcher products)
-        reducef (fn ([] {})
-                  ([m [listing prod]]
-                   (assoc m prod
-                          (-> m
-                              (get prod {:product_name prod
-                                         :listings []})
-                              (update :listings conj listing)))))]
-    (->> listings
-         (r/map (juxt identity (comp :product_name #(match-listing manufacturer-matcher title-matchers %))))
-         (into []))))
-;         (r/fold reducef)
-;         vals)))
-
 (p/defnp group-matches [matches]
   (let [product first
         listing second]
@@ -200,6 +177,25 @@
                   {:product_name (:product_name prod)
                    :listings (map listing matching-listings)}
                   matching-listings))))))
+
+(p/defnp t-match [products listings]
+  (let [manufacturer-matcher (make-manufacturer-matcher products manufacturer-matchers)
+        title-matchers (map-vals make-title-matcher products)]
+    (->> (t/map parse-json)
+         (t/fold {:reducer (fn [m l]
+                             (let [prod-name
+                                   (->> l
+                                        (match-listing manufacturer-matcher title-matchers)
+                                        :product_name)]
+                               (update m prod-name conj l)))
+                  :reducer-identity (constantly {})
+                  :combiner (fn [acc m]
+                              (merge-with (partial apply conj) acc m))
+                  :combiner-identity (constantly {})
+                  :post-combiner (partial map (fn [[prod-name ls]]
+                                                {:product_name prod-name
+                                                 :listings ls}))})
+         (t/tesser (t/chunk 1024 listings)))))
 
 (defn -main
   [& args]
@@ -212,13 +208,9 @@
     (with-open [listings (io/reader (:listings-uri conf))
                 out      (io/writer (:out-uri conf))]
       (doseq [result-item (->> (line-seq listings)
-                               (mapv parse-json)
-                               (t-match products))]
+                               ;(mapv parse-json)
                                ;(iota/seq (:listings-uri conf))
-                               ;(r/map (fn [s] (let [z (parse-json s)]
-                               ;                 (println z)
-                               ;                 z)))
-                               ;(r-match products))]
+                               (t-match products))]
                                ;(match-all products)
                                ;group-matches)]
         (json/generate-stream result-item out)
