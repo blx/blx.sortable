@@ -1,8 +1,16 @@
 (ns blx.sortable.util
   (:require [clojure.string :as str]))
 
+(defn map-vals
+  [f m]
+  (persistent!
+    (reduce-kv (fn [m k v]
+                 (assoc! m k (f v)))
+               (transient {})
+               m)))
+
 (defn first-word
-  "Returns first word in s, defined by splitting on whitespace. Not lazy."
+  "Returns first word in s, defined by splitting on whitespace."
   ; For large strings (10000 chars or more), the lazy version using partition-by
   ; is faster.
   [s]
@@ -14,7 +22,7 @@
   "Computes the Levenshtein distance between two sequences."
   ; Derived from Yomguithereal/clj-fuzzy/src/clj_fuzzy/levenshtein.cljc
   [c1 c2]
-  (let [lev-next-row
+  (let [next-row
         (fn [previous current]
             (reduce
               (fn [row [diagonal above other]]
@@ -25,7 +33,7 @@
               [(inc (first previous))]
               (map vector previous (next previous) c2)))]
       (peek
-        (reduce lev-next-row
+        (reduce next-row
                 (range (inc (count c2)))
                 c1))))
 
