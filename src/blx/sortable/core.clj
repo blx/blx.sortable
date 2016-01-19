@@ -61,11 +61,12 @@
 (defn model-regex
   [model]
   (-> (or model "")
+      str/lower-case
       ; [_ -] chars are equivalent and optional
       (str/replace #"[\s_-]+" "[\\\\s_-]*")
       ; common model prefixes are optional
-      str/lower-case
-      (str/replace #"(dsc|dslr|dmc|pen|slt|is)" "(?:$1)?")))
+      (str/replace #"(dsc|dslr|dmc|pen|slt|is)" "(?:$1)?")
+      re-pattern))
 
 (p/defnp product-regex
   "Generates a case-insensitive regex pattern that represents the product."
@@ -73,6 +74,9 @@
   ; Roughly: word{0,3} family? word? model
   (re-pattern
     (str (family-regex (:family product))
+         ; Require some kind of separator before model to keep it distinct,
+         ; eg. don't accept "PowerShot SX220 HS" for "Ixus 220 HS".
+         #"[\s_-]"
          (model-regex (:model product))
          ; Don't match if model is directly followed by a number,
          ; eg. don't accept "EOS 100" for "EOS 10".
@@ -100,7 +104,7 @@
 (defn prepare-product [product]
   (assoc product
          :regex (product-regex product)
-         :model-regex (re-pattern (model-regex (:model product)))))
+         :model-regex (model-regex (:model product))))
 
 (p/defnp group-products
   "Returns a map of (lowercase first word of manufacturer) to products."
