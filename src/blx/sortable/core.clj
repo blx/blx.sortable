@@ -185,11 +185,13 @@
 
 (defn match! [{:keys [products-uri listings-uri output-uri] :as conf}]
   (info (str "Using conf " conf))
-  (let [[n-prods products] (->> products-uri
+  (let [; Load products, make product-matching function
+        [n-prods products] (->> products-uri
                                 read-json-lines
                                 ((juxt count group-products)))
         listing->product   (matcher/matcher-for listing-match-steps products)
 
+        ; Load listings and match with products
         {:keys [n-listings results]} (with-open [ls (io/reader listings-uri)]
                                        (->> (line-seq ls)
                                             (match-listings parse-json listing->product)))
