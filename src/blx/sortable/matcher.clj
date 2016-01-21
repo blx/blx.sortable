@@ -8,8 +8,8 @@
   as a vector of match-steps that produce and refine the match. A step is a map
   with the following keys:
 
-    - `:accessor` is a function `item -> Maybe d` that is called to retrieve from
-      the item whatever data is used by the matching step.
+    - `:accessor` is a function `item -> Maybe d` that is called on the item to
+      retrieve and preprocess whatever data is used by the matcher.
     - `:matcher-maker` is a function `[source-item] -> (r, d -> Maybe r)` that,
       when called with the collection of source items to be matched against,
       returns a matcher function that, given the result of the previous matcher
