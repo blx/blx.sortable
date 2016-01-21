@@ -3,9 +3,9 @@
             [clojure.java.io :as io]
             [cheshire.core :as json]))
 
-; From Prismatic's plumbing/core
 (defmacro fn->
   "Equivalent to `(fn [x] (-> x ~@body))"
+  ; From Prismatic's plumbing/core
   [& body]
   `(fn [x#] (-> x# ~@body)))
 
@@ -31,11 +31,6 @@
                  (assoc! m k (f v)))
                (transient {})
                m)))
-
-(defn map-id
-  "Maps each item in coll into the pair [item (f item)]."
-  [f coll]
-  (map (juxt identity f) coll))
 
 (defn first-word
   "Returns first word in s, defined by splitting on whitespace."
@@ -67,21 +62,3 @@
         (reduce next-row
                 (range (inc (count c2)))
                 c1))))
-
-(defn str-contains?
-  "Returns true if string src contains string what, optionally case-insensitively."
-  [^String src ^String what ignore-case?]
-  (let [len (count what)]
-    (or (zero? len)
-        (let [first-char (->> (.charAt what 0)
-                              ((juxt #(Character/toLowerCase %)
-                                     #(Character/toUpperCase %)))
-                              set)]
-          (loop [i (- (count src) len)]
-            (if (>= i 0)
-              (if (first-char (.charAt src i))
-                (if (.regionMatches src ignore-case? i what 0 len)
-                  true
-                  (recur (dec i)))
-                (recur (dec i)))
-              false))))))

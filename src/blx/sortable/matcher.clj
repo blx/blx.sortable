@@ -18,7 +18,7 @@
   
   Before using the pipeline, it should be prepared by
 
-      (load-pipeline pipeline source-data)
+      (load-source pipeline source-data)
 
   which will generate `:matcher` functions for each step by calling the step's
   `:matcher-maker` with `source-data`. This factory approach lets matchers
@@ -34,7 +34,7 @@
           false
           match-pipeline))
 
-(defn load-pipeline
+(defn load-source
   [match-pipeline source]
   (->> match-pipeline
        (map #(assoc % :matcher ((:matcher-maker %) source)))))

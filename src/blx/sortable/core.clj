@@ -25,8 +25,8 @@
 ; Data model
 ;
 ; Input and output are text files with one JSON-encoded object per line,
-; but the core matching functions (group-products and match-listings) just
-; operate on sequences of maps.
+; but the core matching functions (group-products and match-listings) are
+; defined for arbitrary sequences of maps.
 ;
 ; Product :: {:product_name str
 ;             :manufacturer str
@@ -44,11 +44,9 @@
 
 (defn family-regex
   [family]
-  (re-pattern
-    (str #"^(?:[\w()]*\s*){0,3}"
-         (when family
-           (str "(?:" (str/lower-case family) ")?"
-                #"\s*\w*\s*")))))
+  (when family
+    (str "(?:" (str/lower-case family) ")?"
+         #"\s*\w*\s*")))
 
 (defn model-regex
   [model]
@@ -65,7 +63,7 @@
   [family-regex product]
   ; Roughly: word{0,3} family? word? model
   (re-pattern
-    (str "(?i)"
+    (str #"(?i)^(?:[\w()]*\s*){0,3}"
          (family-regex (:family product))
          ; Require some kind of separator before model to keep it distinct,
          ; eg. don't accept "PowerShot SX220 HS" for "Ixus 220 HS".
@@ -97,6 +95,48 @@
                        :manufacturer))
        (map-vals prepare-products)))
 
+(p/defnp levenshtein-match?
+  "Attempts to match candidate to a product manufacturer via shortest Levenshtein
+  difference, returning nil if no match."
+  [manufacturers manufacturer-first-letters candidate]
+  ; This is mainly for things like "OPYMPUS" -> "Olympus"
+  (let [min-length 4
+        max-length-delta 3
+        max-lev-dist 2]
+
+    (and
+      ; Very short strings are not likely to be similar enough
+      (>= (count candidate) min-length)
+
+      ; Levenshtein is expensive, so require the first letter to match
+      ; before bothering to compute it.
+      (manufacturer-first-letters (first candidate))
+
+      (p/p :levenshtein
+           (when-let [[guess lev-dist]
+                      (some->>
+                        manufacturers
+                        ; Skip Levenshtein if seqs aren't of similar length
+                        (filter #(<= (Math/abs (- (count %) (count candidate)))
+                                     max-length-delta))
+                        (map (juxt identity
+                                   (partial levenshtein candidate)))
+                        seq
+                        (apply min-key second))]
+             (when (<= lev-dist max-lev-dist)
+               guess))))))
+
+(defn make-manufacturer-matcher
+  "Creates a function that, given a listing manufacturer, returns the
+  corresponding product manufacturer or nil if no match."
+  [products]
+  (let [manufacturers (keys products)
+        first-letters (set (map first manufacturers))]
+    (fn [_ candidate]
+      (p/p :manuf-matcher
+           (or (some #{(first-word candidate)} manufacturers)
+               (levenshtein-match? manufacturers first-letters candidate))))))
+
 (defn make-title-matcher
   "Creates a function that, given a product manufacturer and a listing title,
   returns the corresponding product or nil if no match."
@@ -108,49 +148,10 @@
                             (re-find (:regex %) title)))
               first))))
 
-(defn levenshtein-match?
-  "Attempts to match candidate to a product manufacturer via shortest Levenshtein
-  difference, returning nil if no match."
-  [manufacturers manufacturer-first-letters candidate]
-  ; This is mainly for things like "OPYMPUS" -> "Olympus"
-  (p/p :levenshtein
-       (let [min-length 4
-             max-length-delta 3
-             max-lev-dist 2]
-         (and
-
-           ; Very short strings are not likely to be similar enough
-           (>= (count candidate) min-length)
-
-           ; Levenshtein is expensive, so require the first letter to match
-           ; before bothering to compute it.
-           (manufacturer-first-letters (first candidate))
-
-           (p/p :levenshtein-lev
-                (when-let [[guess lev-dist]
-                           (some->>
-                             manufacturers
-                             ; Skip Levenshtein if seqs aren't of similar length
-                             (filter #(<= (Math/abs (- (count %) (count candidate)))
-                                          max-length-delta))
-                             (map (juxt identity
-                                        (partial levenshtein candidate)))
-                             seq
-                             (apply min-key second))]
-                (when (<= lev-dist max-lev-dist)
-                  guess)))))))
-
-(defn make-manufacturer-matcher
-  "Returns a fn that attempts to match a listing manufacturer to the corresponding
-  product manufacturer, or nil if no match."
-  [products]
-  (let [manufacturers (keys products)
-        first-letters (set (map first manufacturers))]
-    (fn [_ candidate]
-      (or (some #{(first-word candidate)} manufacturers)
-          (levenshtein-match? manufacturers first-letters candidate)))))
-
-(def listing-matching-pipeline
+(def listing-matcher
+  "Listing
+     -> try to match with a known Manufacturer, then
+     -> try to match with one of that Manufacturer's Products"
   [{:accessor (fn-> ((some-fn :manufacturer (comp first-word :title)))
                     str/lower-case
                     (str/replace-first #"^eastman\s*kodak\s*(?:company)?" "kodak")
@@ -178,11 +179,11 @@
   [& args]
   (p/profile
     :info :main
-    (let [products (-> (:products-uri conf)
-                       read-json-lines
-                       group-products)
-          match-pipeline (matcher/load-pipeline listing-matching-pipeline products)
-          listing->product #(matcher/match match-pipeline %)]
+    (let [listing->product (->> (:products-uri conf)
+                                read-json-lines
+                                group-products
+                                (matcher/load-source listing-matcher)
+                                (partial matcher/match))]
       (with-open [listings (io/reader (:listings-uri conf))
                   out      (io/writer (:out-uri conf))]
         (let [results (->> (line-seq listings)
