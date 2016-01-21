@@ -27,7 +27,8 @@
         (matcher result-of-prev-matcher field))
 
   until either a step returns a falsy result or all steps have been run, at
-  which point the final result will be returned.")
+  which point the final result will be returned."
+  (:require [blx.sortable.util :refer [update*]]))
 
 (defn match
   [match-steps item]
@@ -39,14 +40,11 @@
           false
           match-steps))
 
-(defn load-source
-  [match-steps source-items]
-  (->> match-steps
-       (map #(assoc % :matcher ((:matcher-maker %) source-items)))))
-
 (defn matcher-for
   "Creates a matcher function for source-items."
   [match-steps source-items]
-  (let [steps (load-source match-steps source-items)]
+  (let [apply-items #(% source-items)
+        steps (mapv #(update* % :matcher (comp apply-items :matcher-maker))
+                    match-steps)]
     (fn [item]
       (match steps item))))

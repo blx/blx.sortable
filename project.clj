@@ -7,7 +7,8 @@
                  [org.clojure/tools.cli "0.3.3"]
                  [cheshire "5.5.0"]
                  [tesser.core "1.0.1"]
-                 [com.taoensso/timbre "4.2.1"]]
+                 [com.taoensso/timbre "4.2.1"]
+                 [prismatic/plumbing "0.5.2"]]
   :main ^:skip-aot blx.sortable.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all}})

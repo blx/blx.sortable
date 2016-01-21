@@ -3,11 +3,13 @@
             [clojure.java.io :as io]
             [cheshire.core :as json]))
 
-(defmacro fn->
-  "Equivalent to `(fn [x] (-> x ~@body))"
-  ; From Prismatic's plumbing.core
-  [& body]
-  `(fn [x#] (-> x# ~@body)))
+(defn update*
+  "Like update, but the update-fn receives the entire map instead of just
+  the value at k.
+
+  Example: `(update* {:a 1} :b (comp inc :a)) -> {:a 1 :b 2}`."
+  [m k f]
+  (assoc m k (f m)))
 
 (defn parse-json
   "Parses a JSON string, keywordizing keys."
@@ -15,7 +17,7 @@
   (json/parse-string s true))
 
 (defn read-json-lines
-  "Parses each line of the file at `path` as JSON, returning a vector."
+  "Parses each line of the file at path as JSON, returning a vector."
   [path]
   (with-open [rdr (io/reader path)]
     (->> (line-seq rdr)
@@ -23,14 +25,14 @@
          ; close the stream before the seq is realized.
          (mapv parse-json))))
 
-(defn map-vals
-  "Returns the map k -> (f v) for k -> v in m."
-  [f m]
-  (persistent!
-    (reduce-kv (fn [m k v]
-                 (assoc! m k (f v)))
-               (transient {})
-               m)))
+(defn write-json-lines
+  "Encodes each item in coll as JSON and writes the results linewise
+  to the file at path."
+  [path coll]
+  (with-open [out (io/writer path)]
+    (doseq [item coll]
+      (json/generate-stream item out)
+      (.write out "\n"))))
 
 (defn first-word
   "Returns first word in s, defined by splitting on whitespace."

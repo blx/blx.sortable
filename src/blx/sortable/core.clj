@@ -6,13 +6,13 @@
   (:require [clojure.java.io :as io] 
             [clojure.string :as str]
             [clojure.tools.cli :as cli]
-            [cheshire.core :as json]
             [tesser.core :as t]
             [taoensso.timbre :refer [info]]
             [taoensso.timbre.profiling :as p]
+            [plumbing.core :refer [map-vals sum fn->]]
             [blx.sortable.matcher :as matcher]
-            [blx.sortable.util :refer [fn-> parse-json read-json-lines first-word
-                                       levenshtein map-vals max-subs]])
+            [blx.sortable.util :refer [parse-json read-json-lines write-json-lines
+                                       first-word max-subs levenshtein update*]])
   (:gen-class))
 
 (set! *warn-on-reflection* true)
@@ -75,12 +75,10 @@
          ; eg. don't accept "EOS 100" for "EOS 10".
          #"(?:[^\d]+|$)")))
 
-(defn prepare-product
+(def prepare-product
   "Adds indexing fields to the product."
-  [product]
-  (-> product
-      (assoc :model-regex (model-regex (:model product)))
-      (as-> $ (assoc $ :regex (product-regex $)))))
+  (fn-> (update* :model-regex (comp model-regex :model))
+        (update* :regex product-regex)))
 
 (p/defnp group-products
   "Returns a map of (lowercase first word of manufacturer) -> products."
@@ -127,7 +125,7 @@
   corresponding product manufacturer or nil if no match."
   [products]
   (let [known-manufacturers (keys products)
-        first-letters (set (map first known-manufacturers))]
+        first-letters       (set (map first known-manufacturers))]
     (fn [_ manufacturer]
       (p/p :manuf-matcher
            (or (some #{(first-word manufacturer)}
@@ -190,18 +188,18 @@
   (let [[n-prods products] (->> products-uri
                                 read-json-lines
                                 ((juxt count group-products)))
-        listing->product (matcher/matcher-for listing-match-steps products)]
-    (with-open [listings (io/reader listings-uri)
-                out      (io/writer output-uri)]
-      (let [{:keys [n-listings results]} (->> (line-seq listings)
-                                              (match-listings parse-json listing->product))
-            n-matched-prods (count results)
-            n-matched-listings (apply + (map (comp count :listings) results))]
-        (info (format "Matched %d out of %d listings to %d out of %d products."
-                      n-matched-listings n-listings n-matched-prods n-prods))
-        (doseq [result-item results]
-          (json/generate-stream result-item out)
-          (.write out "\n"))))))
+        listing->product   (matcher/matcher-for listing-match-steps products)
+
+        {:keys [n-listings results]} (with-open [ls (io/reader listings-uri)]
+                                       (->> (line-seq ls)
+                                            (match-listings parse-json listing->product)))
+        n-matched-prods    (count results)
+        n-matched-listings (sum (comp count :listings) results)]
+
+    (info (format "Matched %d out of %d listings to %d out of %d products."
+                  n-matched-listings n-listings n-matched-prods n-prods))
+
+    (write-json-lines output-uri results)))
 
 (defn- exit [status msg]
   (println msg)
