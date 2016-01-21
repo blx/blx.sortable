@@ -65,7 +65,7 @@ The main solution is in Clojure, but in `sql/` there is a Python script and
 MySQL bulk-loading scripts to load the products and listings files into MySQL
 for exploration.
 
-This made it easier to do things like
+This makes it easy to do things like
 
     select distinct manufacturer from listing
     order by manufacturer;
