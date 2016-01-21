@@ -26,8 +26,8 @@
       (when-let [field (accessor item)]
         (matcher result-of-prev-matcher field))
 
-  until either a step returns a falsy result or all steps have been run, at
-  which point the final result will be returned."
+  until either a step's matcher returns a falsy result or all steps have been run,
+  at which point the final result will be returned."
   (:require [blx.sortable.util :refer [update*]]))
 
 (defn match
