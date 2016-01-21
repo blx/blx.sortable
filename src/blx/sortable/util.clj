@@ -5,7 +5,7 @@
 
 (defmacro fn->
   "Equivalent to `(fn [x] (-> x ~@body))"
-  ; From Prismatic's plumbing/core
+  ; From Prismatic's plumbing.core
   [& body]
   `(fn [x#] (-> x# ~@body)))
 
@@ -36,7 +36,7 @@
   "Returns first word in s, defined by splitting on whitespace."
   [s]
   (-> (or s "")
-      (str/split #"\s+" 2)  ; Split at most once
+      (str/split #"\s+" 2)  ; Split at most once (return <= 2 pieces)
       first))
 
 (defn max-subs
@@ -47,18 +47,18 @@
 (defn levenshtein
   "Computes the Levenshtein distance between two sequences."
   ; Derived from Yomguithereal/clj-fuzzy/src/clj_fuzzy/levenshtein.cljc
-  [c1 c2]
+  [s1 s2]
   (let [next-row
         (fn [previous current]
-            (reduce
-              (fn [row [diagonal above other]]
-                (let [update-val (if (= other current)
-                                   diagonal
-                                   (inc (min diagonal above (peek row))))]
-                  (conj row update-val)))
-              [(inc (first previous))]
-              (map vector previous (next previous) c2)))]
-      (peek
-        (reduce next-row
-                (range (inc (count c2)))
-                c1))))
+          (reduce
+            (fn [row [diagonal above other]]
+              (let [update-val (if (= other current)
+                                 diagonal
+                                 (inc (min diagonal above (peek row))))]
+                (conj row update-val)))
+            [(inc (first previous))]
+            (map vector previous (next previous) s2)))]
+    (peek
+      (reduce next-row
+              (range (inc (count s2)))
+              s1))))
