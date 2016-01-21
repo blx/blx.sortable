@@ -61,7 +61,7 @@ just do
 
 ## SQL
 
-The main solution is in Clojure, but in `ingest/` there is a Python script and 
+The main solution is in Clojure, but in `sql/` there is a Python script and 
 MySQL bulk-loading scripts to load the products and listings files into MySQL
 for exploration.
 
