@@ -74,7 +74,9 @@ to help refine the matcher.
 
 ## License
 
-Copyright © 2015 Ben Cook
+Copyright © 2016 Ben Cook
 
 Distributed under the Eclipse Public License either version 1.0 or (at
 your option) any later version.
+
+Data in `resources/data/` are the property of Sortable.
