@@ -166,12 +166,14 @@
     :matcher-maker (comp memoize make-title-matcher)}])
 
 (p/defnp match-listings
-  "Matches listings to products using listing-matcher. Returns a vector of
-  Result maps. The order of the results is nondeterministic because Tesser
-  is used to parallelize the matching across all cores."
-  [prepare-fn listing-matcher listings]
+  "Matches listings to products using listing-matcher. Returns the map
+       {:n-listings total-number-of-listings
+        :results    [{:product_name ... :listings [...]} ...]}
+  The order of the results is nondeterministic because Tesser is used
+  to parallelize the matching across all cores."
+  [parse-fn listing-matcher listings]
   (let [chunk-size 2048]
-    (->> (t/map prepare-fn)
+    (->> (t/map parse-fn)
          (t/fuse {:n-listings (t/count)
                   :results (->> (t/group-by (comp :product_name listing-matcher))
                                 (t/post-combine
